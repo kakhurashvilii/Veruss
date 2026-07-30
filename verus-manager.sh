@@ -19,6 +19,7 @@ MINER_PID_FILE="$RUN_DIR/ccminer.pid"
 LOCK_DIR="$RUN_DIR/verus.lock"
 SELF_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 SYSTEM_BIN="/usr/local/sbin/verus"
+SYSTEM_BIN_DIR="${SYSTEM_BIN%/*}"
 SERVICE_NAME="verus-miner"
 REPO_URL="https://github.com/monkins1010/ccminer.git"
 
@@ -44,6 +45,27 @@ need_root() {
         error "Run as root."
         exit 1
     }
+}
+
+install_system_command() {
+    need_root
+
+    # Minimal Alpine/PRoot systems may not have /usr/local/sbin yet.
+    mkdir -p "$SYSTEM_BIN_DIR"
+    chmod 755 /usr/local "$SYSTEM_BIN_DIR" 2>/dev/null || true
+
+    if [ "$SELF_PATH" = "$SYSTEM_BIN" ]; then
+        chmod 755 "$SYSTEM_BIN" 2>/dev/null || true
+        return 0
+    fi
+
+    [ -r "$SELF_PATH" ] || {
+        error "Manager source file is missing: $SELF_PATH"
+        return 1
+    }
+
+    install -m 755 "$SELF_PATH" "$SYSTEM_BIN"
+    ok "Command installed: $SYSTEM_BIN"
 }
 
 banner() {
@@ -539,10 +561,9 @@ start_miner() {
     chmod 600 "$LOG_FILE"
 
     # Install this file as a stable command so services and nohup do not depend
-    # on the temporary download location.
-    if [ "$SELF_PATH" != "$SYSTEM_BIN" ]; then
-        install -m 755 "$SELF_PATH" "$SYSTEM_BIN"
-    fi
+    # on the temporary download location. The helper also creates
+    # /usr/local/sbin on minimal Alpine/PRoot systems.
+    install_system_command
 
     nohup env BASE_DIR="$BASE_DIR" THREADS_OVERRIDE="$THREADS" \
         "$SYSTEM_BIN" run >> "$LOG_FILE" 2>&1 &
@@ -647,7 +668,7 @@ show_logs() {
 install_service() {
     need_root
     ensure_config
-    install -m 755 "$SELF_PATH" "$SYSTEM_BIN"
+    install_system_command
 
     if command -v rc-service >/dev/null 2>&1 && [ -d /etc/init.d ]; then
         cat > "/etc/init.d/$SERVICE_NAME" <<EOF
