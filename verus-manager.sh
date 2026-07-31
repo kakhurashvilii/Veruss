@@ -21,6 +21,11 @@ SELF_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
 SYSTEM_BIN="/usr/local/sbin/verus"
 SYSTEM_BIN_DIR="${SYSTEM_BIN%/*}"
 SERVICE_NAME="verus-miner"
+PROFILE_AUTOSTART="/etc/profile.d/verus-miner-autostart.sh"
+BOOT_HELPER="$BASE_DIR/start-after-boot.sh"
+TERMUX_HOST_PREFIX="/data/data/com.termux/files/usr"
+TERMUX_HOST_HOME="/data/data/com.termux/files/home"
+TERMUX_BOOT_SCRIPT="$TERMUX_HOST_HOME/.termux/boot/verus-miner"
 REPO_URL="https://github.com/monkins1010/ccminer.git"
 
 # ---------- UI ----------
@@ -727,8 +732,45 @@ EOF
         return 0
     fi
 
-    error "Neither OpenRC nor systemd was detected."
-    exit 1
+    # PRoot/container fallback: there is no init system inside the distro.
+    # Start automatically whenever the Alpine shell is opened, and create a
+    # Termux:Boot launcher when the host Termux paths are available.
+    mkdir -p /etc/profile.d
+    cat > "$BOOT_HELPER" <<EOF
+#!/bin/sh
+sleep 8
+"$SYSTEM_BIN" start >/dev/null 2>&1 || true
+EOF
+    chmod 700 "$BOOT_HELPER"
+
+    cat > "$PROFILE_AUTOSTART" <<EOF
+#!/bin/sh
+[ "\$(id -u)" -eq 0 ] || return 0
+if [ -x "$BOOT_HELPER" ]; then
+    nohup "$BOOT_HELPER" >/dev/null 2>&1 &
+fi
+EOF
+    chmod 755 "$PROFILE_AUTOSTART"
+
+    if [ -x "$TERMUX_HOST_PREFIX/bin/proot-distro" ] && [ -d "$TERMUX_HOST_HOME" ]; then
+        mkdir -p "$TERMUX_HOST_HOME/.termux/boot" 2>/dev/null || true
+        cat > "$TERMUX_BOOT_SCRIPT" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/sh
+termux-wake-lock >/dev/null 2>&1 || true
+sleep 20
+/data/data/com.termux/files/usr/bin/proot-distro login alpine -- /usr/local/sbin/verus start     >> /data/data/com.termux/files/home/verus-boot.log 2>&1
+EOF
+        chmod 700 "$TERMUX_BOOT_SCRIPT" 2>/dev/null || true
+        ok "Termux:Boot launcher created: $TERMUX_BOOT_SCRIPT"
+        warn "Android reboot autostart requires the Termux:Boot app to be installed and allowed to run in background."
+    else
+        warn "No OpenRC/systemd was found. This is probably a PRoot/container environment."
+        ok "Login autostart installed: $PROFILE_AUTOSTART"
+        info "The miner will start when this Alpine environment is opened and will keep running after the terminal closes."
+        warn "For Android reboot autostart, the host app must launch this environment; an init service cannot be created from inside PRoot."
+    fi
+
+    return 0
 }
 
 remove_service() {
@@ -745,6 +787,16 @@ remove_service() {
         rm -f "/etc/systemd/system/$SERVICE_NAME.service"
         systemctl daemon-reload
         ok "systemd service removed."
+    fi
+
+    if [ -f "$PROFILE_AUTOSTART" ] || [ -f "$BOOT_HELPER" ]; then
+        rm -f "$PROFILE_AUTOSTART" "$BOOT_HELPER"
+        ok "PRoot login autostart removed."
+    fi
+
+    if [ -f "$TERMUX_BOOT_SCRIPT" ]; then
+        rm -f "$TERMUX_BOOT_SCRIPT" 2>/dev/null || true
+        ok "Termux:Boot launcher removed."
     fi
 }
 
